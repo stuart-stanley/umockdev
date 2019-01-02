@@ -23,6 +23,8 @@
 #include <errno.h>
 #include <linux/ioctl.h>
 #include <linux/usbdevice_fs.h>
+#include <linux/i2c.h>
+#include <linux/i2c-dev.h>
 #include <linux/input.h>
 
 #include "debug.h"
@@ -918,6 +920,9 @@ ioctl_type ioctl_db[] = {
 #ifdef EVIOCGMTSLOTS
     I_NAMED_SIMPLE_STRUCT_IN(EVIOCGMTSLOTS(32), "EVIOCGMTSLOTS", 0, ioctl_insertion_parent_stateless),
 #endif
+
+    /* i2c */
+    I_NOSTATE(I2C_RDWR, success),
 
     /* terminator */
     {0, 0, 0, "", NULL, NULL, NULL, NULL, NULL}

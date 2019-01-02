@@ -380,6 +380,7 @@ public class Testbed: GLib.Object {
     {
         string dev_path;
         string? dev_node = null;
+	debug("SCS: ss=%s, name=%s, parent=%s", subsystem, name, parent);
 
         if (parent != null) {
             if (!parent.has_prefix("/sys/")) {
@@ -418,6 +419,8 @@ public class Testbed: GLib.Object {
             /* device symlink from class/; skip directories in name; this happens
              * when being called from add_from_string() when the parent devices do
              * not exist yet */
+	    debug("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa: %s %s", Path.build_filename("..", "..", dev_path_no_sys),
+                                     Path.build_filename(class_dir, Path.get_basename(name)));
             assert(FileUtils.symlink(Path.build_filename("..", "..", dev_path_no_sys),
                                      Path.build_filename(class_dir, Path.get_basename(name))) == 0);
         } else {
@@ -955,6 +958,7 @@ public class Testbed: GLib.Object {
         string? majmin = null;
         string cur_data = data;
         string? devnode_path = null;
+	string? symlink_val = null;
         uint8[] devnode_contents = {};
 
         cur_data = this.record_parse_line(cur_data, out type, out key, out devpath);
@@ -1018,7 +1022,8 @@ public class Testbed: GLib.Object {
                     break;
 
                 case 'S':
-                    /* TODO: ignored for now */
+                    assert (symlink_val == null);  /* can't have multiples yet */
+		    symlink_val = val;
                     break;
 
                 default:
@@ -1045,6 +1050,10 @@ public class Testbed: GLib.Object {
         /* create fake device node */
         if (devnode_path != null)
             this.create_node_for_device(subsystem, devnode_path, devnode_contents, majmin);
+
+        /* symlink if needed */
+	if (symlink_val != null)
+	    this.create_symlink_for_devpath(symlink_val, devpath);
 
         /* skip over multiple blank lines */
         while (cur_data[0] != '\0' && cur_data[0] == '\n')
@@ -1112,6 +1121,16 @@ public class Testbed: GLib.Object {
         this.dev_fd.insert (devname, ptym);
     }
 
+    private void
+    create_symlink_for_devpath (string symlink_val, string dev_path_no_sys)
+        throws UMockdev.Error
+    {
+        string? symlink_path = Path.build_filename(this.root_dir, symlink_val);
+
+        assert (DirUtils.create_with_parents(Path.get_dirname(symlink_path), 0755) == 0);
+        debug("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb: %s %s", Path.build_filename("..", dev_path_no_sys), symlink_path);
+        assert(FileUtils.symlink(Path.build_filename("..", dev_path_no_sys), symlink_path) == 0);
+     }
 
     /**
      * umockdev_testbed_record_parse_line:
