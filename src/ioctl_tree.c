@@ -348,7 +348,7 @@ ioctl_tree_execute(ioctl_tree * tree, ioctl_tree * last, IOCTL_REQUEST_TYPE id, 
     ioctl_tree *i;
     int r, handled;
 
-    DBG(DBG_IOCTL_TREE, "ioctl_tree_execute ioctl %X\n", (unsigned) id);
+    DBG(DBG_IOCTL_TREE, "ioctl_tree_execute ioctl %X, tree=%p\n", (unsigned) id, tree);
 
     /* check if it's a hardware independent stateless ioctl */
     t = ioctl_type_get_by_id(id);
@@ -795,6 +795,188 @@ usbdevfs_reapurb_insertion_parent(ioctl_tree * tree, ioctl_tree * node)
 
 /***********************************
  *
+ * I2C_RDWR
+ *
+ ***********************************/
+
+static void
+i2c_rdwr_free_built(struct i2c_rdwr_ioctl_data *header) {
+  struct i2c_msg *message;
+  size_t msgs_proced;
+
+  if (header == NULL) {
+    return;
+  }
+
+  if (header->msgs != NULL) {
+    for (msgs_proced = 0; msgs_proced < header->nmsgs; msgs_proced++) {
+      message = &header->msgs[msgs_proced];
+      if (message->buf != NULL) {
+	free(message->buf);
+	message->buf = NULL;
+      }
+    }
+    free(header->msgs);
+    header->msgs = NULL;
+  }
+  free(header);
+}
+
+static void
+i2c_rdwr_init_from_bin(ioctl_tree * node, const void *data)
+{
+  DBG(DBG_IOCTL_TREE, "   i2c_rdwr_init_from_bin: not implemented yet");
+}
+
+static int
+i2c_rdwr_init_from_text(ioctl_tree * node, const char *data)
+{
+  struct i2c_rdwr_ioctl_data *header = calloc(sizeof(struct i2c_rdwr_ioctl_data), 1);
+  struct i2c_msg *messages = NULL, *message;
+  size_t msgs_proced;
+  int result, offset;
+
+  /* todo: I2C_RDWR_IOCTL_MAX_MSGS check! */
+
+  result = sscanf(data, "%u %n", &header->nmsgs, &offset);
+  if (result < 1) {
+    DBG(DBG_IOCTL_TREE, "i2c_rdwr_init_from_text: failed to parse record %s", data);
+    free(header);
+    return FALSE;
+  }
+
+  messages = calloc(sizeof(struct i2c_msg), header->nmsgs);
+  header->msgs = messages;
+  data += offset;
+  for (msgs_proced = 0;  msgs_proced < header->nmsgs; msgs_proced++) {
+    message = &messages[msgs_proced];
+    result = sscanf(data, "%04x %04x %02x %n",
+		    (unsigned int*)&message->addr,
+		    (unsigned int*)&message->flags,
+		    (unsigned int*)&message->len, &offset);
+    if (result < 3) {
+      DBG(DBG_IOCTL_TREE, "i2c_rdwr_init_from_text: failed to parse messages[%d] record %s", msgs_proced, data);
+      i2c_rdwr_free_built(header);
+      return FALSE;
+    }
+
+    message->buf = calloc(1, message->len);
+    data += offset;
+    if (!read_hex(data, (char *)message->buf, message->len)) {
+      DBG(DBG_IOCTL_TREE, "i2c_rdwr_init_from_text: failed to parse messages[%d] at data-buffer %s", msgs_proced, data);
+      i2c_rdwr_free_built(header);
+      return FALSE;
+    }
+    data += (message->len) * 2;  /* 2 chars per hex-byte */
+  }
+  node->data = header;
+  return TRUE;
+}
+
+static void
+i2c_rdwr_free_data(ioctl_tree * node)
+{
+  struct i2c_rdwr_ioctl_data *header = node->data;
+
+  i2c_rdwr_free_built(header);
+}
+
+static void
+i2c_rdwr_write(const ioctl_tree * node, FILE * f)
+{
+  struct i2c_rdwr_ioctl_data *header = node->data;
+  struct i2c_msg *msg;
+  size_t msg_n;
+
+  assert(header != NULL);
+  fprintf(f, "I2C_RDWR 0 %d ", header->nmsgs);
+  if (header->nmsgs > 0) {
+    assert(header->msgs != NULL);
+  }
+  for (msg_n = 0; msg_n < header->nmsgs; msg_n++) {
+    msg = &header->msgs[msg_n];
+    fprintf(f, " %04x %04x %02x ", msg->addr, msg->flags, msg->len);
+    write_hex(f, (const char *)msg->buf, msg->len);
+  }
+}
+
+static int
+i2c_rdwr_msg_equal(struct i2c_rdwr_ioctl_data *h1, struct i2c_rdwr_ioctl_data *h2) {
+  struct i2c_msg *m1, *m2;
+  size_t msg_n;
+
+  DBG(DBG_IOCTL_TREE, "i2c_rdwr_equal: h1->nmsgs=%d, h2->nmsgs=%d\n", h1->nmsgs, h2->nmsgs);
+
+  if (h1->nmsgs != h2->nmsgs) {
+    DBG(DBG_IOCTL_TREE, "i2c_rdwr_equal: bail at %d\n", __LINE__);
+    return FALSE;
+  }
+
+  for (msg_n = 0; msg_n < h1->nmsgs; msg_n++) {
+    m1 = &h1->msgs[msg_n];
+    m2 = &h2->msgs[msg_n];
+    if ((m1->addr != m2->addr) || (m1->len != m2->len) || (m1->flags != m2->flags)) {
+      DBG(DBG_IOCTL_TREE, "i2c_rdwr_equal: bail at %d\n", __LINE__);
+      return FALSE;
+    }
+    /*
+     * now for the weird one: if the I2C_M_RD flag is set, we skip the buffer compare.
+     */
+    if ((m1->flags & I2C_M_RD) == 0) {
+      if (memcmp(m1->buf, m2->buf, m1->len) != 0) {
+	/* oops */
+	DBG(DBG_IOCTL_TREE, "i2c_rdwr_equal: bail at %d\n", __LINE__);
+	return FALSE;
+      }
+    }
+  }
+  return TRUE;
+}
+
+ static int
+i2c_rdwr_equal(const ioctl_tree * n1, const ioctl_tree * n2)
+{
+  struct i2c_rdwr_ioctl_data *h1 = n1->data;
+  struct i2c_rdwr_ioctl_data *h2 = n2->data;
+
+  return i2c_rdwr_msg_equal(h1, h2);
+}
+
+static int
+i2c_rdwr_execute(const ioctl_tree * node, IOCTL_REQUEST_TYPE id, void *arg, int *ret)
+{
+  struct i2c_rdwr_ioctl_data *real_header = (struct i2c_rdwr_ioctl_data *)arg;
+  struct i2c_rdwr_ioctl_data *lcl_header = (struct i2c_rdwr_ioctl_data *)node->data;
+  size_t msg_n;
+  struct i2c_msg *real_m, *lcl_m;
+
+  if (id == node->id) {
+    if (i2c_rdwr_msg_equal(lcl_header, real_header)) {
+      for (msg_n = 0; msg_n < real_header->nmsgs; msg_n++) {
+	real_m = &real_header->msgs[msg_n];
+	lcl_m = &lcl_header->msgs[msg_n];
+	if (real_m->flags & I2C_M_RD) {
+	  /* ok, this is where the copy-back data goes! */
+	  memcpy(real_m->buf, lcl_m->buf, real_m->len);
+	}
+      }
+      *ret = node->ret;
+      return TRUE;
+    }
+  }
+
+  DBG(DBG_IOCTL_TREE, "i2c_rdwr_equal: ran it?!?!?! %d\n", __LINE__);
+  return 0;
+}
+
+static ioctl_tree *
+i2c_rdwr_insertion_parent(ioctl_tree * tree, ioctl_tree * node)
+{
+  return tree;
+}
+
+/***********************************
+ *
  * generic implementations for hardware/state independent ioctls
  *
  ***********************************/
@@ -922,7 +1104,8 @@ ioctl_type ioctl_db[] = {
 #endif
 
     /* i2c */
-    I_NOSTATE(I2C_RDWR, success),
+    I_CUSTOM(I2C_RDWR, 0, i2c_rdwr),
+    I_NOSTATE(FIONBIO, success),
 
     /* terminator */
     {0, 0, 0, "", NULL, NULL, NULL, NULL, NULL}

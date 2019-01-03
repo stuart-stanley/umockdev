@@ -17,6 +17,8 @@
 *-coverage
 *-coverage.info
 stamp-*
+cscope-files
+cscope.out
 Makefile.in
 Makefile
 config.h
