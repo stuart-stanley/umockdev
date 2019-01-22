@@ -33,5 +33,8 @@ else
     echo "lcov not installed, not enabling code coverage"
 fi
 
+# TODO: actually detect if python3-dev is installed (using pkg-config python3)
+args="$args --enable-python-simulator"
+
 autoreconf --install
 [ -n "$NOCONFIGURE" ] || ./configure $args "$@"

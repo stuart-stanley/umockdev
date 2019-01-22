@@ -12,6 +12,7 @@
 #define DBG_SCRIPT  (1 << 2)
 #define DBG_IOCTL   (1 << 3)
 #define DBG_IOCTL_TREE (1 << 4)
+#define DBG_PSI     (1 << 5)
 
 extern unsigned debug_categories;
 

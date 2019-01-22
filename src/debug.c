@@ -27,8 +27,10 @@ init_debug(void)
 	    debug_categories |= DBG_IOCTL;
 	else if (strcmp (token, "ioctl-tree") == 0)
 	    debug_categories |= DBG_IOCTL_TREE;
+	else if (strcmp (token, "pysim") == 0)
+	    debug_categories |= DBG_PSI;
 	else {
-	    fprintf(stderr, "Invalid UMOCKDEV_DEBUG category %s. Valid values are: path netlink ioctl ioctl-tree script all\n", token);
+	    fprintf(stderr, "Invalid UMOCKDEV_DEBUG category %s. Valid values are: path netlink ioctl ioctl-tree script pysim all\n", token);
 	    abort();
 	}
     }

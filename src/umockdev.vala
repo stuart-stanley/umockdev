@@ -21,6 +21,7 @@ namespace UMockdev {
 private bool __in_mock_env_initialized = false;
 private bool __in_mock_env_result = false;
 
+
 /**
  * SECTION:umockdev
  * @title: umockdev
@@ -706,6 +707,13 @@ public class Testbed: GLib.Object {
         }
         debug("umockdev_testbed_uevent: sending uevent %s for device %s", action, devpath);
         this.ev_sender.send(devpath, action);
+    }
+
+    public signal void ioctl_call (string dev);
+    public void emulate_ioctl_call_signal () {
+        warning(": fingers crossed");
+        ioctl_call("hello");
+        warning(": fingers uncrossed");
     }
 
     /**

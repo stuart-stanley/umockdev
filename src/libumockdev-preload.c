@@ -25,6 +25,7 @@
 /* for getting stat64 */
 #define _GNU_SOURCE
 
+#include <sys/mman.h>
 #include <assert.h>
 #include <errno.h>
 #include <dirent.h>
@@ -54,6 +55,7 @@
 #include "config.h"
 #include "debug.h"
 #include "ioctl_tree.h"
+#include "python_sim.h"
 
 /* fix missing O_TMPFILE on some systems */
 #ifndef O_TMPFILE
@@ -65,6 +67,21 @@
  * Utility functions
  *
  ********************************/
+void __attach(void) __attribute__((constructor));
+void __dettach(void) __attribute__((destructor));
+
+
+void __attach(void) {
+#ifdef PYTHON_SIMULATOR
+  psim_constructor();
+#endif /* PYTHON_SIMULATOR */
+}
+
+void __dettach(void) {
+#ifdef PYTHON_SIMULATOR
+  psim_destructor();
+#endif /* PYTHON_SIMULATOR */
+}
 
 #define UNHANDLED -100
 
@@ -505,7 +522,7 @@ ioctl_record_open(int fd)
 
 	    /* load an already existing log */
 	    fseek(ioctl_record_log, 0, SEEK_SET);
-	    ioctl_record = ioctl_tree_read(ioctl_record_log);
+	    ioctl_record = ioctl_tree_read(ioctl_record_log, device_path);
 	} else {
 	    /* New log, add devnode header */
 	    DBG(DBG_IOCTL, "ioctl_record_open: Starting new record %s\n", path);
@@ -604,7 +621,7 @@ ioctl_emulate_open(int fd, const char *dev_path)
     if (f == NULL)
 	return;
 
-    fdinfo->tree = ioctl_tree_read(f);
+    fdinfo->tree = ioctl_tree_read(f, dev_path);
     _fclose(f);
     if (fdinfo->tree == NULL) {
 	fprintf(stderr, "ERROR: libumockdev-preload: failed to load ioctl record file for %s: empty or invalid format?",
@@ -660,6 +677,32 @@ ioctl_emulate(int fd, IOCTL_REQUEST_TYPE request, void *arg)
 
     return ioctl_result;
 }
+/********************************
+ *
+ * mmap emulation
+ *
+ ********************************/
+static fd_map mmap_wrapped_fds;
+
+static void
+mmap_emulate_open(int fd, const char *dev_path)
+{
+    if (strncmp(dev_path, "/dev/mem", 8) != 0) {
+      return;
+    }
+    fd_map_add(&mmap_wrapped_fds, fd, NULL);
+
+    fprintf(stderr, "MMAP Open was just called on %s", dev_path);
+    /* TODO: this could be for any mmap, plus fixed vals COULD go into a config-file like ioctls etc */
+    DBG(DBG_IOCTL, "mmap_emulate_open fd %i (%s)\n", fd, dev_path);
+}
+
+static void
+mmap_emulate_close(int fd)
+{
+  /* At the moment, we don't do anything with this... TODO: remove completely if we never do */
+}
+
 
 /********************************
  *
@@ -1236,9 +1279,10 @@ int prefix ## open ## suffix (const char *path, int flags, ...)	    \
     } else							    \
 	ret =  _ ## prefix ## open ## suffix(p, flags);		    \
     TRAP_PATH_UNLOCK;						    \
-    if (path != p)						    \
+    if (path != p) {						    \
 	ioctl_emulate_open(ret, path);				    \
-    else {							    \
+        mmap_emulate_open(ret, path);                               \
+    } else {							    \
 	ioctl_record_open(ret);					    \
 	script_record_open(ret);				    \
     }								    \
@@ -1260,9 +1304,10 @@ int prefix ## open ## suffix (const char *path, int flags)	    \
     DBG(DBG_PATH, "testbed wrapped " #prefix "open" #suffix "(%s) -> %s\n", path, p); \
     ret =  _ ## prefix ## open ## suffix(p, flags);		    \
     TRAP_PATH_UNLOCK;						    \
-    if (path != p)						    \
+    if (path != p) {						    \
 	ioctl_emulate_open(ret, path);				    \
-    else {							    \
+        mmap_emulate_open(ret, path);                               \
+    } else {							    \
 	ioctl_record_open(ret);					    \
 	script_record_open(ret);				    \
     }								    \
@@ -1287,9 +1332,10 @@ FILE* prefix ## fopen ## suffix (const char *path, const char *mode)  \
     TRAP_PATH_UNLOCK;						    \
     if (ret != NULL) {						    \
 	int fd = fileno(ret);					    \
-	if (path != p)						    \
+	if (path != p) {					    \
 	    ioctl_emulate_open(fd, path);			    \
-	else {							    \
+	    mmap_emulate_open(fd, path);			    \
+	} else {						    \
 	    ioctl_record_open(fd);				    \
 	    script_record_open(fd);				    \
 	}							    \
@@ -1573,6 +1619,7 @@ close(int fd)
 
     netlink_close(fd);
     ioctl_emulate_close(fd);
+    mmap_emulate_close(fd);
     ioctl_record_close(fd);
     script_record_close(fd);
 
@@ -1587,6 +1634,7 @@ fclose(FILE * stream)
     if (fd >= 0) {
 	netlink_close(fd);
 	ioctl_emulate_close(fd);
+	mmap_emulate_close(fd);
 	ioctl_record_close(fd);
 	script_record_close(fd);
     }
@@ -1674,6 +1722,30 @@ isatty(int fd)
 out:
     errno = orig_errno;
     return result;
+}
+
+void *
+mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
+{
+    libc_func(mmap, void *, void *, size_t, int, int, int, off_t);
+    void *res;
+
+    fprintf(stderr, "MMAP: called for %p, len=%d, prot=0x%x, flags=0x%x, fd=%d, offset=0x%lx\n", addr, length,
+	    prot, flags, fd, offset);
+    if (fd_map_get(&mmap_wrapped_fds, fd, NULL)) {
+      /* found it! */
+      fprintf(stderr, "%s@%d: FOUND MMAP!\n", __FILE__, __LINE__);
+      res = psim_emulate_mmap(addr, length, prot, flags, fd, offset);
+    } else {
+      res = _mmap(addr, length, prot, flags, fd, offset);
+    }
+
+    return res;
+}
+
+int
+munmap(void *addr, size_t length) {
+  return 0;
 }
 
 /* vim: set sw=4 noet: */

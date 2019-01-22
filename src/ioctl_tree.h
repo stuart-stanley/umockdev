@@ -53,6 +53,8 @@ struct ioctl_tree {
     const ioctl_type *type;
     int depth;
     void *data;
+    int callback_point_node;           /* do sim-callback from this node */
+    char *dev_file_name;               /* device file name aka '/dev/foo' */
     int ret;
     IOCTL_REQUEST_TYPE id;		/* usually type->id, but needed for patterns like EVIOCGABS(abs) */
     ioctl_tree *child;
@@ -66,7 +68,7 @@ struct ioctl_tree {
 ioctl_tree *ioctl_tree_new_from_bin(IOCTL_REQUEST_TYPE id, const void *data, int ret);
 ioctl_tree *ioctl_tree_new_from_text(const char *line);
 void ioctl_tree_free(ioctl_tree * tree);
-ioctl_tree *ioctl_tree_read(FILE * f);
+ioctl_tree *ioctl_tree_read(FILE * f, const char *dev_path);
 void ioctl_tree_write(FILE * f, const ioctl_tree * tree);
 ioctl_tree *ioctl_tree_insert(ioctl_tree * tree, ioctl_tree * node);
 ioctl_tree *ioctl_tree_find_equal(ioctl_tree * tree, ioctl_tree * node);

@@ -62,6 +62,9 @@ GTK_DOC_CHECK([1.14],[--flavour no-tmpl])
 AM_CONDITIONAL([ENABLE_GTK_DOC], false)
 ])
 
+# python-simulator. TODO: how to check input from autogen.sh!?!?!?
+AM_CONDITIONAL([ENABLE_PYTHON_SIMULATOR], true)
+
 # check for gobject-introspection
 m4_ifdef([GOBJECT_INTROSPECTION_CHECK],
 	 [GOBJECT_INTROSPECTION_CHECK([1.32])],

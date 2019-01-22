@@ -89,6 +89,12 @@ libumockdev_preload_la_LDFLAGS = \
 	-ldl			\
 	$(NULL)
 
+if ENABLE_PYTHON_SIMULATOR
+libumockdev_preload_la_SOURCES += src/python_sim.c
+libumockdev_preload_la_CFLAGS += $(shell pkg-config python3 --cflags) -DPYTHON_SIMULATOR
+libumockdev_preload_la_LDFLAGS += $(shell pkg-config python3 --libs)
+endif
+
 # this is an LD_PRELOAD library, so remove static library and libtool wrappers
 libumockdev-preload-install-hook:
 	rm -f $(DESTDIR)$(libdir)/libumockdev-preload.a

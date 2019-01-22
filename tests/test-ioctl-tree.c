@@ -79,7 +79,7 @@ get_test_tree(void)
     g_assert(f != NULL);
     g_assert_cmpint(fwrite(test_tree_str, strlen(test_tree_str), 1, f), ==, 1);
     rewind(f);
-    tree = ioctl_tree_read(f);
+    tree = ioctl_tree_read(f, "na");
     fclose(f);
     g_assert(tree != NULL);
     return tree;
@@ -527,7 +527,7 @@ t_evdev(void)
     rewind(f);
 
     /* read it back */
-    tree = ioctl_tree_read(f);
+    tree = ioctl_tree_read(f, "na");
     fclose(f);
 
     /* execute EVIOCGABS ioctls */

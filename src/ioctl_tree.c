@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <assert.h>
 #include <errno.h>
 #include <linux/ioctl.h>
@@ -29,6 +30,7 @@
 
 #include "debug.h"
 #include "ioctl_tree.h"
+#include "python_sim.h"
 
 #define TRUE 1
 #define FALSE 0
@@ -110,6 +112,10 @@ ioctl_tree_free(ioctl_tree * tree)
     if (tree == NULL)
 	return;
 
+    if (tree->dev_file_name != NULL) {
+        free(tree->dev_file_name);
+    }
+
     ioctl_tree_free(tree->child);
     ioctl_tree_free(tree->next);
     if (tree->type != NULL && tree->type->free_data != NULL)
@@ -184,7 +190,7 @@ ioctl_tree_insert(ioctl_tree * tree, ioctl_tree * node)
 }
 
 ioctl_tree *
-ioctl_tree_read(FILE * f)
+ioctl_tree_read(FILE * f, const char *dev_path)
 {
     ioctl_tree *tree = NULL;
     ioctl_tree *node, *prev = NULL;
@@ -207,6 +213,11 @@ ioctl_tree_read(FILE * f)
 	    free(line);
 	    line = NULL;
 	    break;
+	}
+	/* really hacky to avoid totally changing call-sigs from here to imp methods. bleh. */
+	if (node->callback_point_node) {
+	    node->dev_file_name = strdup(dev_path);
+	    assert(node->dev_file_name);
 	}
 
 	if (tree == NULL) {
@@ -496,6 +507,10 @@ ioctl_simplestruct_init_from_text(ioctl_tree * node, const char *data)
 	node->id = _IOC(_IOC_DIR(node->id), _IOC_TYPE(node->id), _IOC_NR(node->id), data_len);
     }
 
+    if (strcmp(data, "enable_callback\n") == 0) {
+        node->callback_point_node = TRUE;
+        return TRUE;
+    }
     if (!read_hex(data, node->data, NSIZE(node))) {
 	DBG(DBG_IOCTL_TREE, "ioctl_simplestruct_init_from_text: failed to parse '%s'\n", data);
 	free(node->data);
@@ -528,6 +543,12 @@ static int
 ioctl_simplestruct_in_execute(const ioctl_tree * node, IOCTL_REQUEST_TYPE id, void *arg, int *ret)
 {
     if (id == node->id) {
+#ifdef PYTHON_SIMULATOR
+        if (node->callback_point_node) {
+	  /* this node doesn't do this code. It checks with python-simulator instead */
+	  return psim_simplestruct_ioctl_execute_cb(node->dev_file_name, id, arg, ret);
+        }
+#endif /* PYTHON_SIMULATOR */
 	memcpy(arg, node->data, NSIZE(node));
 	*ret = node->ret;
 	return 1;
@@ -838,6 +859,10 @@ i2c_rdwr_init_from_text(ioctl_tree * node, const char *data)
 
   /* todo: I2C_RDWR_IOCTL_MAX_MSGS check! */
 
+  if (strcmp(data, "enable_callback\n") == 0) {
+    node->callback_point_node = TRUE;
+    return TRUE;
+  }
   result = sscanf(data, "%u %n", &header->nmsgs, &offset);
   if (result < 1) {
     DBG(DBG_IOCTL_TREE, "i2c_rdwr_init_from_text: failed to parse record %s", data);
@@ -887,6 +912,11 @@ i2c_rdwr_write(const ioctl_tree * node, FILE * f)
   struct i2c_rdwr_ioctl_data *header = node->data;
   struct i2c_msg *msg;
   size_t msg_n;
+
+  if (node->callback_point_node) {
+    fprintf(f, "I2C_RDWR 0 enable_calback");
+    return;
+  }
 
   assert(header != NULL);
   fprintf(f, "I2C_RDWR 0 %d ", header->nmsgs);
@@ -951,6 +981,12 @@ i2c_rdwr_execute(const ioctl_tree * node, IOCTL_REQUEST_TYPE id, void *arg, int 
   struct i2c_msg *real_m, *lcl_m;
 
   if (id == node->id) {
+#ifdef PYTHON_SIMULATOR
+    if (node->callback_point_node) {
+      /* this node doesn't do this code. It checks with python-simulator instead */
+      return psim_i2c_rdwr_execute_cb(node->dev_file_name, id, real_header, ret);
+    }
+#endif /* PYTHON_SIMULATOR */
     if (i2c_rdwr_msg_equal(lcl_header, real_header)) {
       for (msg_n = 0; msg_n < real_header->nmsgs; msg_n++) {
 	real_m = &real_header->msgs[msg_n];
@@ -1020,7 +1056,7 @@ ioctl_insertion_parent_stateless(ioctl_tree * tree, ioctl_tree * node)
 
 /* ioctl which does not need to consider its data argument and has no state */
 #define I_NOSTATE(name, execute_result) \
-    {name, -1, 0, #name, NULL, NULL, NULL, NULL, NULL, ioctl_execute_ ## execute_result, NULL}
+  {name, -1, 0, #name, NULL, NULL, NULL, NULL, NULL, ioctl_execute_ ## execute_result, NULL, NULL}
 
 /* input structs with fixed length with explicit size */
 #define I_NAMED_SIZED_SIMPLE_STRUCT_IN(name, namestr, size, nr_range, insertion_parent_fn) \
@@ -1050,7 +1086,7 @@ ioctl_insertion_parent_stateless(ioctl_tree * tree, ioctl_tree * node)
 
 /* data with custom handlers; necessary for structs with pointers to nested
  * structs, or keeping stateful handlers */
-#define I_CUSTOM(name, nr_range, fn_prefix)                     \
+#define I_CUSTOM(name, nr_range, fn_prefix)	\
     {name, -1, nr_range, #name,                                 \
      fn_prefix ## _init_from_bin, fn_prefix ## _init_from_text, \
      fn_prefix ## _free_data,                                   \
