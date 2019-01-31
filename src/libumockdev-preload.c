@@ -674,33 +674,70 @@ ioctl_emulate(int fd, IOCTL_REQUEST_TYPE request, void *arg)
     } else {
 	ioctl_result = UNHANDLED;
     }
-
     return ioctl_result;
 }
+/********************************
+ *
+ * generic file access simulation
+ *
+ ********************************/
+static fd_map generic_wrapped_fds;
+
+static void
+generic_file_open(int fd, const char *dev_path)
+{
+  psimi_generic_file_td *psim_generic_file_handle;
+
+  fprintf(stderr, "%s@%d: psimi_generic_file_td for %s is FD %d\n", __FILE__, __LINE__, dev_path, fd);
+  psim_generic_file_handle = psim_generic_file_open(dev_path);
+  if (psim_generic_file_handle == NULL) {
+    /* not ours! */
+    return;
+  }
+
+  fd_map_add(&generic_wrapped_fds, fd, psim_generic_file_handle);
+  DBG(DBG_GF, "generic file handler engaged for %s on fd %i\n", dev_path, fd);
+}
+
+static void
+generic_file_close(int fd)
+{
+  psimi_generic_file_td *psim_generic_file_handle;
+
+  if (fd_map_get(&generic_wrapped_fds, fd, (const void **)&psim_generic_file_handle)) {
+    DBG(DBG_GF, "generic_file_close: closing file fd %i\n", fd);
+    fd_map_remove(&generic_wrapped_fds, fd);
+    psim_generic_file_close(psim_generic_file_handle);
+  }
+}
+
 /********************************
  *
  * mmap emulation
  *
  ********************************/
+
 static fd_map mmap_wrapped_fds;
 
 static void
 mmap_emulate_open(int fd, const char *dev_path)
 {
-    if (strncmp(dev_path, "/dev/mem", 8) != 0) {
-      return;
+    if (strncmp(dev_path, "/dev/mem", 9) != 0) {
+	return;
     }
+
     fd_map_add(&mmap_wrapped_fds, fd, NULL);
 
-    fprintf(stderr, "MMAP Open was just called on %s", dev_path);
-    /* TODO: this could be for any mmap, plus fixed vals COULD go into a config-file like ioctls etc */
-    DBG(DBG_IOCTL, "mmap_emulate_open fd %i (%s)\n", fd, dev_path);
+    DBG(DBG_MMAP, "mmap_emulate_open fd %i (%s)\n", fd, dev_path);
 }
 
 static void
 mmap_emulate_close(int fd)
 {
-  /* At the moment, we don't do anything with this... TODO: remove completely if we never do */
+    if (fd_map_get(&ioctl_wrapped_fds, fd, NULL)) {
+	DBG(DBG_IOCTL, "mmap_emulate_close: closing mmap /dev/mem fd %i\n", fd);
+	fd_map_remove(&ioctl_wrapped_fds, fd);
+    }
 }
 
 
@@ -1282,6 +1319,7 @@ int prefix ## open ## suffix (const char *path, int flags, ...)	    \
     if (path != p) {						    \
 	ioctl_emulate_open(ret, path);				    \
         mmap_emulate_open(ret, path);                               \
+	generic_file_open(ret, path);                               \
     } else {							    \
 	ioctl_record_open(ret);					    \
 	script_record_open(ret);				    \
@@ -1307,6 +1345,7 @@ int prefix ## open ## suffix (const char *path, int flags)	    \
     if (path != p) {						    \
 	ioctl_emulate_open(ret, path);				    \
         mmap_emulate_open(ret, path);                               \
+	generic_file_open(ret, path);                               \
     } else {							    \
 	ioctl_record_open(ret);					    \
 	script_record_open(ret);				    \
@@ -1335,6 +1374,7 @@ FILE* prefix ## fopen ## suffix (const char *path, const char *mode)  \
 	if (path != p) {					    \
 	    ioctl_emulate_open(fd, path);			    \
 	    mmap_emulate_open(fd, path);			    \
+	    generic_file_open(fd, path);                            \
 	} else {						    \
 	    ioctl_record_open(fd);				    \
 	    script_record_open(fd);				    \
@@ -1470,7 +1510,12 @@ read(int fd, void *buf, size_t count)
 {
     libc_func(read, ssize_t, int, void *, size_t);
     ssize_t res;
+    psimi_generic_file_td *psim_generic_file_handle;
 
+    if (fd_map_get(&generic_wrapped_fds, fd, (const void **)&psim_generic_file_handle)) {
+        res = psim_generic_file_read(psim_generic_file_handle, buf, count);
+        return res;
+    }
     res = _read(fd, buf, count);
     script_record_op('r', fd, buf, res);
     return res;
@@ -1481,7 +1526,12 @@ write(int fd, const void *buf, size_t count)
 {
     libc_func(write, ssize_t, int, const void *, size_t);
     ssize_t res;
+    psimi_generic_file_td *psim_generic_file_handle;
 
+    if (fd_map_get(&generic_wrapped_fds, fd, (const void **)&psim_generic_file_handle)) {
+        res = psim_generic_file_write(psim_generic_file_handle, buf, count);
+        return res;
+    }
     res = _write(fd, buf, count);
     script_record_op('w', fd, buf, res);
     return res;
@@ -1496,6 +1546,39 @@ fread(void *ptr, size_t size, size_t nmemb, FILE * stream)
     res = _fread(ptr, size, nmemb, stream);
     script_record_op('r', fileno(stream), ptr, (res == 0 && ferror(stream)) ? -1 : res * size);
     return res;
+}
+
+
+/* todo: unfix max length */
+int
+__dprintf_chk (int fd, int flag, const char *fmt, ...)
+{
+  char fb[2048];
+  va_list argp;
+  int res, wcnt;
+  psimi_generic_file_td *psim_generic_file_handle;
+
+  if (fd_map_get(&generic_wrapped_fds, fd, (const void **)&psim_generic_file_handle)) {
+    va_start(argp, fmt);
+    wcnt = vsnprintf(fb, sizeof(fb), fmt, argp);
+    va_end(argp);
+    assert(wcnt >= 0 && wcnt < sizeof(fb));
+    res = psim_generic_file_write(psim_generic_file_handle, fb, wcnt);
+    if (res < 0) {
+      /* straight error, errno should be set */
+      return res;
+    }
+    if (res != wcnt) {
+      errno = ENOMEM;
+      return -1;
+    }
+    errno = 0;
+    return res;
+  }
+  va_start(argp, fmt);
+  res = vdprintf(fd, fmt, argp);
+  va_end(argp);
+  return res;
 }
 
 size_t
@@ -1620,6 +1703,7 @@ close(int fd)
     netlink_close(fd);
     ioctl_emulate_close(fd);
     mmap_emulate_close(fd);
+    generic_file_close(fd);
     ioctl_record_close(fd);
     script_record_close(fd);
 
@@ -1635,6 +1719,7 @@ fclose(FILE * stream)
 	netlink_close(fd);
 	ioctl_emulate_close(fd);
 	mmap_emulate_close(fd);
+	generic_file_close(fd);
 	ioctl_record_close(fd);
 	script_record_close(fd);
     }
@@ -1730,13 +1815,13 @@ mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
     libc_func(mmap, void *, void *, size_t, int, int, int, off_t);
     void *res;
 
-    fprintf(stderr, "MMAP: called for %p, len=%d, prot=0x%x, flags=0x%x, fd=%d, offset=0x%lx\n", addr, length,
-	    prot, flags, fd, offset);
+    DBG(DBG_MMAP, "mmap(%p, len=%d, prot=0x%x, flags=0x%x, fd=%d, offset=0x%lx) :: ", addr, length,
+	prot, flags, fd, offset);
     if (fd_map_get(&mmap_wrapped_fds, fd, NULL)) {
-      /* found it! */
-      fprintf(stderr, "%s@%d: FOUND MMAP!\n", __FILE__, __LINE__);
+      DBG(DBG_MMAP, "emulation memory found\n");
       res = psim_emulate_mmap(addr, length, prot, flags, fd, offset);
     } else {
+      DBG(DBG_MMAP, "no emulation memory found, using real call.\n");
       res = _mmap(addr, length, prot, flags, fd, offset);
     }
 

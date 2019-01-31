@@ -13,6 +13,9 @@
 #define DBG_IOCTL   (1 << 3)
 #define DBG_IOCTL_TREE (1 << 4)
 #define DBG_PSI     (1 << 5)
+#define DBG_MMAP    (1 << 6)
+#define DBG_GF      (1 << 7)
+#define DBG_THR     (1 << 8)
 
 extern unsigned debug_categories;
 

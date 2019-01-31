@@ -27,6 +27,7 @@
 #include <linux/i2c.h>
 #include <linux/i2c-dev.h>
 #include <linux/input.h>
+#include <linux/watchdog.h>
 
 #include "debug.h"
 #include "ioctl_tree.h"
@@ -359,7 +360,8 @@ ioctl_tree_execute(ioctl_tree * tree, ioctl_tree * last, IOCTL_REQUEST_TYPE id, 
     ioctl_tree *i;
     int r, handled;
 
-    DBG(DBG_IOCTL_TREE, "ioctl_tree_execute ioctl %X, tree=%p\n", (unsigned) id, tree);
+    DBG(DBG_IOCTL_TREE, "ioctl_tree_execute ioctl %X size=%ld, tree=%p\n", (unsigned) id,
+	_IOC_SIZE(id), tree);
 
     /* check if it's a hardware independent stateless ioctl */
     t = ioctl_type_get_by_id(id);
@@ -501,16 +503,18 @@ ioctl_simplestruct_init_from_text(ioctl_tree * node, const char *data)
     size_t data_len = strlen(data) / 2;
     node->data = malloc(data_len);
 
+    if (strcmp(data, "enable_callback\n") == 0) {
+        node->callback_point_node = TRUE;
+	/* strip length from id so execute cmp can not do it every time! */
+	node->id = _IOC(_IOC_DIR(node->id), _IOC_TYPE(node->id), _IOC_NR(node->id), 0);
+        return TRUE;
+    }
     if (NSIZE(node) != data_len) {
-	DBG(DBG_IOCTL_TREE, "ioctl_simplestruct_init_from_text: adjusting ioctl ID %X (size %u) to actual data length %zu\n",
-	    (unsigned) node->id, (unsigned) NSIZE(node), data_len);
+	DBG(DBG_IOCTL_TREE, "ioctl_simplestruct_init_from_text: adjusting ioctl ID %X (size %u) to actual data length %zu '%s'\n",
+	    (unsigned) node->id, (unsigned) NSIZE(node), data_len, data);
 	node->id = _IOC(_IOC_DIR(node->id), _IOC_TYPE(node->id), _IOC_NR(node->id), data_len);
     }
 
-    if (strcmp(data, "enable_callback\n") == 0) {
-        node->callback_point_node = TRUE;
-        return TRUE;
-    }
     if (!read_hex(data, node->data, NSIZE(node))) {
 	DBG(DBG_IOCTL_TREE, "ioctl_simplestruct_init_from_text: failed to parse '%s'\n", data);
 	free(node->data);
@@ -542,13 +546,20 @@ ioctl_simplestruct_equal(const ioctl_tree * n1, const ioctl_tree * n2)
 static int
 ioctl_simplestruct_in_execute(const ioctl_tree * node, IOCTL_REQUEST_TYPE id, void *arg, int *ret)
 {
-    if (id == node->id) {
 #ifdef PYTHON_SIMULATOR
-        if (node->callback_point_node) {
-	  /* this node doesn't do this code. It checks with python-simulator instead */
-	  return psim_simplestruct_ioctl_execute_cb(node->dev_file_name, id, arg, ret);
+    if (node->callback_point_node) {
+        IOCTL_REQUEST_TYPE no_len_id;
+
+        no_len_id = _IOC(_IOC_DIR(id), _IOC_TYPE(id), _IOC_NR(id), 0);
+
+        /* note that _from_text will have zeroed the lengths of these */
+        if (no_len_id == node->id) {
+	    /* this node doesn't do this code. It checks with python-simulator instead */
+	    return psim_simplestruct_ioctl_execute_cb(node->dev_file_name, id, arg, ret);
         }
+    }
 #endif /* PYTHON_SIMULATOR */
+    if (node->id == id ) {
 	memcpy(arg, node->data, NSIZE(node));
 	*ret = node->ret;
 	return 1;
@@ -914,7 +925,7 @@ i2c_rdwr_write(const ioctl_tree * node, FILE * f)
   size_t msg_n;
 
   if (node->callback_point_node) {
-    fprintf(f, "I2C_RDWR 0 enable_calback");
+    fprintf(f, "I2C_RDWR 0 enable_callback");
     return;
   }
 
@@ -1142,6 +1153,11 @@ ioctl_type ioctl_db[] = {
     /* i2c */
     I_CUSTOM(I2C_RDWR, 0, i2c_rdwr),
     I_NOSTATE(FIONBIO, success),
+
+    /* watchdog */
+    /* todo: fill in rest from watchdog.h */
+    I_NAMED_SIMPLE_STRUCT_IN(WDIOC_GETTIMEOUT, "WDIOC_GETTIMEOUT", 0, ioctl_insertion_parent_stateless),
+    I_NAMED_SIMPLE_STRUCT_IN(WDIOC_GETPRETIMEOUT, "WDIOC_GETPRETIMEOUT", 0, ioctl_insertion_parent_stateless),
 
     /* terminator */
     {0, 0, 0, "", NULL, NULL, NULL, NULL, NULL}
